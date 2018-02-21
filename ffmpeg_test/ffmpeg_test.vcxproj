@@ -78,6 +78,7 @@
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LinkIncremental>false</LinkIncremental>
+    <OutDir>$(SolutionDir)$(Configuration)\build\</OutDir>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <LinkIncremental>false</LinkIncremental>
@@ -119,12 +120,15 @@
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>F:\vsProgects\tutorial3\thirdparty\ffmpeg\include;F:\vsProgects\tutorial3\thirdparty\sdl2\include;F:\vsProgects\tutorial3\thirdparty\pthread\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalDependencies>F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\avcodec.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\avdevice.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\avfilter.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\avformat.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\avutil.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\postproc.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\swresample.lib;F:\vsProgects\tutorial3\thirdparty\ffmpeg\lib\swscale.lib;F:\vsProgects\tutorial3\thirdparty\sdl2\lib\SDL2.lib;F:\vsProgects\tutorial3\thirdparty\SDL2\lib\SDL2main.lib;F:\vsProgects\tutorial3\thirdparty\pthread\lib\pthreadVC2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">

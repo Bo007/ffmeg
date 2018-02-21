@@ -29,6 +29,7 @@ extern "C"
 }
 #include <SDL.h>
 #include <thread>
+#include <mutex>
 #ifdef __MINGW32__
 #undef main /* Prevents SDL from overriding main() */
 #endif
@@ -164,8 +165,8 @@ SDL_Rect scaleKeepAspectRatio( const int& sourceWidth, const int& sourceHeight,
 	int yCenterAspect = (distHeight - sourceHeight / sourceAspectRatio) / 2;
 
 	return{ xCenterAspect, yCenterAspect,
-		sourceWidth / sourceAspectRatio,
-		sourceHeight / sourceAspectRatio };
+		static_cast<int>(sourceWidth / sourceAspectRatio),
+		static_cast<int>(sourceHeight / sourceAspectRatio) };
 	
 }
 
@@ -188,6 +189,7 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 	pkt1->next = NULL;
 
 	SDL_LockMutex(q->mutex);
+	//std::cout << "q->mutex " << 0 << std::endl;
 
 	if (!q->last_pkt)
 		q->first_pkt = pkt1;
@@ -199,6 +201,7 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 	SDL_CondSignal(q->cond);
 
 	SDL_UnlockMutex(q->mutex);
+	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 	return 0;
 }
 static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
@@ -207,6 +210,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 	int ret;
 
 	SDL_LockMutex(q->mutex);
+	//std::cout << "q->mutex " << 0 << std::endl;
 
 	for (;;) {
 
@@ -231,11 +235,13 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 			ret = 0;
 			break;
 		}
-		else {
+		else
+		{
 			SDL_CondWait(q->cond, q->mutex);
 		}
 	}
 	SDL_UnlockMutex(q->mutex);
+	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 	return ret;
 }
 
@@ -243,6 +249,7 @@ static void packet_queue_flush(PacketQueue *q) {
 	AVPacketList *pkt, *pkt1;
 
 	SDL_LockMutex(q->mutex);
+	//std::cout << "q->mutex " << 0 << std::endl;
 	for (pkt = q->first_pkt; pkt != NULL; pkt = pkt1) {
 		pkt1 = pkt->next;
 		av_free_packet(&pkt->pkt);
@@ -253,6 +260,7 @@ static void packet_queue_flush(PacketQueue *q) {
 	q->nb_packets = 0;
 	q->size = 0;
 	SDL_UnlockMutex(q->mutex);
+	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 }
 
 double get_audio_clock(VideoState *is)
@@ -270,19 +278,16 @@ double get_audio_clock(VideoState *is)
 	if (bytes_per_sec) {
 		pts -= (double)hw_buf_size / bytes_per_sec;
 	}
+	//std::cout << "audio clock" << pts << std::endl;
 	return pts;
 }
 double get_video_clock(VideoState *is)
 {
-	double delta;
-
-	delta = (av_gettime() - is->video_current_pts_time) / 1000000.0;
+	double delta = (av_gettime() - is->video_current_pts_time) / 1000000.0;
+	//std::cout << "video clock " << is->video_current_pts << std::endl;
 	return is->video_current_pts + delta;
 }
-double get_external_clock(VideoState *is)
-{
-	return av_gettime() / 1000000.0;
-}
+
 
 double get_master_clock(VideoState *is)
 {
@@ -291,7 +296,7 @@ double get_master_clock(VideoState *is)
 	else if (is->av_sync_type == AV_SYNC_AUDIO_MASTER)
 		return get_audio_clock(is);
 	else
-		return get_external_clock(is);
+		return av_gettime() / 1000000.0;
 }
 
 
@@ -489,7 +494,7 @@ void video_display(VideoState *is)
 	if (vp->bmp)
 	{
 		SDL_LockMutex(screen_mutex);
-		std::cout << "screen_mutex locked video_display" << std::endl;
+		//std::cout << "screen_mutex locked video_display" << std::endl;
 
 		SDL_Rect distRect = {0,0,0,0};
 		SDL_GetWindowSize(screen, &distRect.w, &distRect.h);
@@ -510,11 +515,12 @@ void video_refresh_timer(void *userdata)
 	VideoPicture *vp;
 	double actual_delay, delay, sync_threshold, ref_clock, diff;
 
-	if (is->video_st) {
-		if (is->pictq_size == 0) {
+	if (is->video_st)
+	{
+		if (is->pictq_size == 0)
 			schedule_refresh(is, 1000);
-		}
-		else {
+		else
+		{
 			vp = &is->pictq[is->pictq_rindex];
 
 			is->video_current_pts = vp->pts;
@@ -570,9 +576,8 @@ void video_refresh_timer(void *userdata)
 			SDL_UnlockMutex(is->pictq_mutex);
 		}
 	}
-	else {
+	else
 		schedule_refresh(is, 100);
-	}
 }
 
 void alloc_picture(void *userdata) {
@@ -755,7 +760,8 @@ int stream_component_open(VideoState *is, int stream_index) {
 		return -1;
 	}
 
-	switch (codecCtx->codec_type) {
+	switch (codecCtx->codec_type)
+	{
 	case AVMEDIA_TYPE_AUDIO:
 		is->audioStream = stream_index;
 		is->audio_st = pFormatCtx->streams[stream_index];
@@ -786,6 +792,7 @@ int stream_component_open(VideoState *is, int stream_index) {
 	default:
 		break;
 	}
+	return 0;
 }
 
 int decode_thread(void *arg)
