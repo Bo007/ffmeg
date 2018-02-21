@@ -30,6 +30,7 @@ extern "C"
 #include <SDL.h>
 #include <thread>
 #include <mutex>
+#include <condition_variable>
 #ifdef __MINGW32__
 #undef main /* Prevents SDL from overriding main() */
 #endif
@@ -69,8 +70,8 @@ typedef struct PacketQueue {
 	AVPacketList *first_pkt, *last_pkt;
 	int nb_packets;
 	int size;
-	SDL_mutex *mutex;
-	SDL_cond *cond;
+	std::mutex *mutex;
+	std::condition_variable *cond;
 } PacketQueue;
 
 
@@ -124,8 +125,8 @@ typedef struct VideoState
 
 	VideoPicture    pictq[VIDEO_PICTURE_QUEUE_SIZE];
 	int             pictq_size, pictq_rindex, pictq_windex;
-	SDL_mutex       *pictq_mutex;
-	SDL_cond        *pictq_cond;
+	std::mutex* pictq_mutex;
+	std::condition_variable* pictq_cond;
 
 	std::thread      *parse_tid;
 	std::thread      *video_tid;
@@ -142,7 +143,7 @@ enum {
 
 SDL_Window     *screen;
 SDL_Renderer     *renderer;
-SDL_mutex       *screen_mutex;
+std::mutex       *screen_mutex;
 
 /* Since we only have one decoding thread, the Big Struct
 can be global in case we need it. */
@@ -172,8 +173,8 @@ SDL_Rect scaleKeepAspectRatio( const int& sourceWidth, const int& sourceHeight,
 
 void packet_queue_init(PacketQueue *q) {
 	memset(q, 0, sizeof(PacketQueue));
-	q->mutex = SDL_CreateMutex();
-	q->cond = SDL_CreateCond();
+	q->mutex = new std::mutex();
+	q->cond = new std::condition_variable();
 }
 
 int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
@@ -188,7 +189,7 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 	pkt1->pkt = *pkt;
 	pkt1->next = NULL;
 
-	SDL_LockMutex(q->mutex);
+	q->mutex->lock();
 	//std::cout << "q->mutex " << 0 << std::endl;
 
 	if (!q->last_pkt)
@@ -198,9 +199,9 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
 	q->last_pkt = pkt1;
 	q->nb_packets++;
 	q->size += pkt1->pkt.size;
-	SDL_CondSignal(q->cond);
+	q->cond->notify_one();
 
-	SDL_UnlockMutex(q->mutex);
+	q->mutex->unlock();
 	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 	return 0;
 }
@@ -209,7 +210,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 	AVPacketList *pkt1;
 	int ret;
 
-	SDL_LockMutex(q->mutex);
+	q->mutex->lock();
 	//std::cout << "q->mutex " << 0 << std::endl;
 
 	for (;;) {
@@ -237,10 +238,12 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 		}
 		else
 		{
-			SDL_CondWait(q->cond, q->mutex);
+			std::unique_lock<std::mutex> lock;
+			q->mutex;
+			q->cond->wait();
 		}
 	}
-	SDL_UnlockMutex(q->mutex);
+	q->mutex->unlock();
 	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 	return ret;
 }
@@ -248,7 +251,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 static void packet_queue_flush(PacketQueue *q) {
 	AVPacketList *pkt, *pkt1;
 
-	SDL_LockMutex(q->mutex);
+	q->mutex->lock();
 	//std::cout << "q->mutex " << 0 << std::endl;
 	for (pkt = q->first_pkt; pkt != NULL; pkt = pkt1) {
 		pkt1 = pkt->next;
@@ -259,7 +262,7 @@ static void packet_queue_flush(PacketQueue *q) {
 	q->first_pkt = NULL;
 	q->nb_packets = 0;
 	q->size = 0;
-	SDL_UnlockMutex(q->mutex);
+	q->mutex->unlock();
 	//std::cout << "q->mutex " << 1 << std::endl << std::endl;
 }
 
@@ -493,7 +496,7 @@ void video_display(VideoState *is)
 	VideoPicture *vp = &is->pictq[is->pictq_rindex];
 	if (vp->bmp)
 	{
-		SDL_LockMutex(screen_mutex);
+		screen_mutex->lock();
 		//std::cout << "screen_mutex locked video_display" << std::endl;
 
 		SDL_Rect distRect = {0,0,0,0};
@@ -504,7 +507,7 @@ void video_display(VideoState *is)
 		SDL_RenderClear(renderer);
 		SDL_RenderCopy(renderer, vp->bmp, NULL, &distRect);
 		SDL_RenderPresent(renderer);
-		SDL_UnlockMutex(screen_mutex);
+		screen_mutex->unlock();
 	}
 }
 
@@ -570,10 +573,10 @@ void video_refresh_timer(void *userdata)
 			if (++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE) {
 				is->pictq_rindex = 0;
 			}
-			SDL_LockMutex(is->pictq_mutex);
+			is->pictq_mutex->lock();
 			is->pictq_size--;
-			SDL_CondSignal(is->pictq_cond);
-			SDL_UnlockMutex(is->pictq_mutex);
+			is->pictq_cond->notify_one();
+			is->pictq_mutex->unlock();
 		}
 	}
 	else
@@ -592,11 +595,11 @@ void alloc_picture(void *userdata) {
 	}
 	// Allocate a place to put our YUV image on that screen
 	std::cout << "alloc_picture" << std::endl;
-	SDL_LockMutex(screen_mutex);
+	screen_mutex->lock();
 	vp->bmp = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_YV12, SDL_TEXTUREACCESS_STREAMING,
 		is->video_ctx->width,
 		is->video_ctx->height);
-	SDL_UnlockMutex(screen_mutex);
+	screen_mutex->unlock();
 
 	vp->width = is->video_ctx->width;
 	vp->height = is->video_ctx->height;
@@ -607,12 +610,12 @@ void alloc_picture(void *userdata) {
 int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 {
 	/* wait until we have space for a new pic */
-	SDL_LockMutex(is->pictq_mutex);
+	is->pictq_mutex->lock();
 	while (is->pictq_size >= VIDEO_PICTURE_QUEUE_SIZE &&
 		!is->quit) {
-		SDL_CondWait(is->pictq_cond, is->pictq_mutex);
+		is->pictq_cond->wait(is->pictq_mutex);
 	}
-	SDL_UnlockMutex(is->pictq_mutex);
+	is->pictq_mutex->unlock();
 
 	if (is->quit)
 		return -1;
@@ -634,7 +637,7 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 	}
 	/* We have a place to put our picture on the queue */
 
-	SDL_LockMutex(is->pictq_mutex);
+	is->pictq_mutex->lock();
 	if (vp->bmp)
 	{
 		SDL_Rect rect = {0, 0, pFrame->width, pFrame->height };
@@ -648,7 +651,7 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 		
 		is->pictq_size++;
 	}
-	SDL_UnlockMutex(is->pictq_mutex);
+	is->pictq_mutex->unlock();
 	return 0;
 }
 
@@ -968,9 +971,9 @@ int eventLoop()
 			case SDLK_SPACE:
 				static bool flag;
 				if (flag)
-					SDL_UnlockMutex(screen_mutex);
+					screen_mutex->lock();
 				else
-					SDL_LockMutex(screen_mutex);
+					screen_mutex->unlock();
 				std::cout << "SPACE " << flag << std::endl;
 				flag = !flag;
 				break;
@@ -996,8 +999,8 @@ int eventLoop()
 	* audio queues are waiting for more data.  Make them stop
 	* waiting and terminate normally.
 	*/
-	SDL_CondSignal(global_video_state->audioq.cond);
-	SDL_CondSignal(global_video_state->videoq.cond);
+	global_video_state->audioq.cond->notify_one();
+	global_video_state->videoq.cond->notify_one();
 	SDL_Quit();
 	return 0;
 }
@@ -1025,14 +1028,14 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	screen_mutex = SDL_CreateMutex();
+	screen_mutex = new std::mutex();
 
 	char* fileName = "F:\\738994211.mp4";
 	// fileName = argv[1];
 	av_strlcpy(is->filename, fileName, sizeof(is->filename));
 
-	is->pictq_mutex = SDL_CreateMutex();
-	is->pictq_cond = SDL_CreateCond();
+	is->pictq_mutex = new std::mutex();
+	is->pictq_cond = new std::condition_variable();
 
 	schedule_refresh(is, 40);
 
