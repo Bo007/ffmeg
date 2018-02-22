@@ -27,9 +27,17 @@
 
 #include "Player.h"
 
+#include <vector>
+
 int main(int argc, char *argv[])
 {
-	char* fileName = "F:\\738994211.mp4";
-	return eventLoop(fileName);
-}
+	std::vector<char *>fileNames;
+	fileNames.push_back("F:\\Pohozhdeniya_imperatora.mp4");
+	fileNames.push_back("F:\\738994211.mp4");
+	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video).mp4");
+	fileNames.push_back("F:\\Ofenbach2.mp4");
 
+	int index = 3;
+
+	return eventLoop(fileNames[index]);
+}
