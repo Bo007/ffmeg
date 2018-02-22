@@ -1,4 +1,4 @@
-// tutorial05.c
+﻿// tutorial05.c
 // A pedagogical video player that really works!
 //
 // Code based on FFplay, Copyright (c) 2003 Fabrice Bellard,
@@ -26,6 +26,8 @@ extern "C"
 #include <libswscale/swscale.h>
 #include <libavutil/time.h>
 #include <libavutil/avstring.h>
+#include <libavutil\opt.h>
+#include <libswresample\swresample.h>
 }
 #include <SDL.h>
 #include <thread>
@@ -66,7 +68,8 @@ extern "C"
 
 #define DEFAULT_AV_SYNC_TYPE AV_SYNC_VIDEO_MASTER
 
-typedef struct PacketQueue {
+typedef struct PacketQueue
+{
 	AVPacketList *first_pkt, *last_pkt;
 	int nb_packets;
 	int size;
@@ -171,13 +174,15 @@ SDL_Rect scaleKeepAspectRatio( const int& sourceWidth, const int& sourceHeight,
 	
 }
 
-void packet_queue_init(PacketQueue *q) {
+void packet_queue_init(PacketQueue *q)
+{
 	memset(q, 0, sizeof(PacketQueue));
 	q->mutex = new std::mutex();
 	q->cond = new std::condition_variable();
 }
 
-int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
+int packet_queue_put(PacketQueue *q, AVPacket *pkt)
+{
 
 	AVPacketList *pkt1;
 	if (pkt != &flush_pkt && av_dup_packet(pkt) < 0) {
@@ -238,9 +243,7 @@ static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block)
 		}
 		else
 		{
-			std::unique_lock<std::mutex> lock;
-			q->mutex;
-			q->cond->wait();
+			q->cond->wait(std::unique_lock<std::mutex>(*q->mutex, std::defer_lock));
 		}
 	}
 	q->mutex->unlock();
@@ -275,13 +278,11 @@ double get_audio_clock(VideoState *is)
 	hw_buf_size = is->audio_buf_size - is->audio_buf_index;
 	bytes_per_sec = 0;
 	n = is->audio_ctx->channels * 2;
-	if (is->audio_st) {
+	if (is->audio_st)
 		bytes_per_sec = is->audio_ctx->sample_rate * n;
-	}
-	if (bytes_per_sec) {
+	if (bytes_per_sec)
 		pts -= (double)hw_buf_size / bytes_per_sec;
-	}
-	//std::cout << "audio clock" << pts << std::endl;
+	//std::cout << "audio clock " << pts << std::endl;
 	return pts;
 }
 double get_video_clock(VideoState *is)
@@ -290,7 +291,6 @@ double get_video_clock(VideoState *is)
 	//std::cout << "video clock " << is->video_current_pts << std::endl;
 	return is->video_current_pts + delta;
 }
-
 
 double get_master_clock(VideoState *is)
 {
@@ -308,8 +308,6 @@ audio buffer size */
 int synchronize_audio(VideoState *is, short *samples,
 	int samples_size, double pts)
 {
-	
-
 	if (is->av_sync_type != AV_SYNC_AUDIO_MASTER)
 	{
 
@@ -318,8 +316,10 @@ int synchronize_audio(VideoState *is, short *samples,
 
 		double ref_clock = get_master_clock(is);
 		diff = get_audio_clock(is) - ref_clock;
+		//std::cout << diff << " - " <<
+			//get_master_clock(is) << std::endl;
 
-		if (diff < AV_NOSYNC_THRESHOLD)
+		if( diff < AV_NOSYNC_THRESHOLD)
 		{
 			// accumulate the diffs
 			is->audio_diff_cum = diff + is->audio_diff_avg_coef
@@ -374,27 +374,94 @@ int synchronize_audio(VideoState *is, short *samples,
 	return samples_size;
 }
 
+SwrContext* initSwrContext(AVCodecContext* audio_context)
+{
+	// пробовал вариант av_get_default_channel_layout(audio_context->channels)
+
+	/* set options */
+	auto swr_ctx = swr_alloc_set_opts(NULL,
+		audio_context->channel_layout,
+		AV_SAMPLE_FMT_S16,
+		audio_context->sample_rate,
+		audio_context->channel_layout,
+		audio_context->sample_fmt,
+		audio_context->sample_rate,
+		0, NULL);
+
+	swr_init(swr_ctx);
+	return swr_ctx;
+}
+
+static int init_converted_samples(uint8_t **converted_input_samples,
+	AVCodecContext *output_codec_context,
+	int frame_size)
+{
+	int error;
+
+	/**
+	* Allocate as many pointers as there are audio channels.
+	* Each pointer will later point to the audio samples of the corresponding
+	* channels (although it may be NULL for interleaved formats).
+	*/
+	if (!(*converted_input_samples = (uint8_t*)calloc(output_codec_context->channels,
+		sizeof(**converted_input_samples))))
+	{
+		fprintf(stderr, "Could not allocate converted input sample pointers\n");
+		return AVERROR(ENOMEM);
+	}
+
+	/**
+	* Allocate memory for the samples of all channels in one consecutive
+	* block for convenience.
+	*/
+	if ((error = av_samples_alloc(converted_input_samples, NULL,
+		output_codec_context->channels,
+		frame_size,
+		output_codec_context->sample_fmt, 0)) < 0)
+	{
+		av_freep(&(converted_input_samples)[0]);
+		free(converted_input_samples);
+		return error;
+	}
+	return 0;
+}
+
+int convert_sample_buffer(AVCodecContext* audio_context, const int& len1, uint8_t** inBuff, uint8_t** outBuff)
+{
+	static auto swr_ctx = initSwrContext(audio_context);
+	int errCode = init_converted_samples(outBuff, audio_context, len1);
+	if (errCode < 0)
+	{
+		std::cout << "init_converted_samples ERROR: " << errCode << std::endl;
+		return errCode;
+	}
+
+	errCode = swr_convert(swr_ctx, outBuff, len1,
+		(const uint8_t**)(inBuff), len1);
+	if (errCode < 0)
+	{
+		std::cout << "CONVERT ERROR: " << errCode << std::endl;
+		return errCode;
+	}
+	return 0;
+}
+
 int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double *pts_ptr)
 {
-
-	int len1, data_size = 0;
 	AVPacket *pkt = &is->audio_pkt;
-	double pts;
-	int n;
-
 	for (;;)
 	{
 		while (is->audio_pkt_size > 0)
 		{
 			int got_frame = 0;
-			len1 = avcodec_decode_audio4(is->audio_ctx, &is->audio_frame, &got_frame, pkt);
+			int len1 = avcodec_decode_audio4(is->audio_ctx, &is->audio_frame, &got_frame, pkt);
 			if (len1 < 0)
 			{
 				/* if error, skip frame */
 				is->audio_pkt_size = 0;
 				break;
 			}
-			data_size = 0;
+			int data_size = 0;
 			if (got_frame)
 			{
 				data_size = av_samples_get_buffer_size(NULL,
@@ -403,17 +470,27 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 					is->audio_ctx->sample_fmt,
 					1);
 				assert(data_size <= buf_size);
-				memcpy(audio_buf, is->audio_frame.data[0], data_size);
+
+				// респлим буффер
+				auto inBuff = is->audio_frame.data[0];
+
+				uint8_t *resapmledBuff = NULL;
+				int errCode = convert_sample_buffer(is->audio_ctx, data_size, &inBuff, &resapmledBuff);
+
+				if (errCode < 0)
+					continue;
+
+				memcpy(audio_buf, resapmledBuff, data_size);
 			}
 			is->audio_pkt_data += len1;
 			is->audio_pkt_size -= len1;
-			if (data_size <= 0) {
-				/* No data yet, get more frames */
+
+			if (data_size <= 0)/* No data yet, get more frames */
 				continue;
-			}
-			pts = is->audio_clock;
+
+			double pts = is->audio_clock;
 			*pts_ptr = pts;
-			n = 2 * is->audio_ctx->channels;
+			int n = 2 * is->audio_ctx->channels;
 			is->audio_clock += (double)data_size /
 				(double)(n * is->audio_ctx->sample_rate);
 			/* We have data, return it and come back for more later */
@@ -426,7 +503,8 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 			return -1;
 		}
 		/* next packet */
-		if (packet_queue_get(&is->audioq, pkt, 1) < 0) {
+		if (packet_queue_get(&is->audioq, pkt, 1) < 0)
+		{
 			return -1;
 		}
 		if (pkt->data == flush_pkt.data)
@@ -446,38 +524,53 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 void audio_callback(void *userdata, Uint8 *stream, int len)
 {
 	VideoState *is = (VideoState *)userdata;
-	int len1, audio_size;
-	double pts;
-
-	while (len > 0) {
+	while (len > 0)
+	{
 		if (is->audio_buf_index >= is->audio_buf_size)
 		{
 			/* We have already sent all our data; get more */
-			audio_size = audio_decode_frame(is, is->audio_buf, sizeof( is->audio_buf), &pts );
+			double pts;
+			int audio_size = audio_decode_frame(is, is->audio_buf, sizeof( is->audio_buf), &pts );
 			if (audio_size < 0)
 			{
 				/* If error, output silence */
 				is->audio_buf_size = 1024;
 				memset(is->audio_buf, 0, is->audio_buf_size);
 			}
-			else {
-				audio_size = synchronize_audio(is, (int16_t *)is->audio_buf,
+			else
+			{
+				audio_size = synchronize_audio(is, (short *)is->audio_buf,
 					audio_size, pts);
 				is->audio_buf_size = audio_size;
 			}
 			is->audio_buf_index = 0;
 		}
-		len1 = is->audio_buf_size - is->audio_buf_index;
+		int len1 = is->audio_buf_size - is->audio_buf_index;
 		if (len1 > len)
 			len1 = len;
-		memcpy(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1);
+
+
+		// пробовал респлить здесь
+		auto inBuff = is->audio_buf + is->audio_buf_index;
+
+		//uint8_t *resapmledBuff = NULL;
+		//int errCode = convert_sample_buffer(is->audio_ctx, len1, &inBuff, &resapmledBuff);
+
+		//if (errCode < 0)
+		//	continue;
+
+		//uint8_t* tempResampleBuf = resapmledBuff;
+		uint8_t* tempResampleBuf = inBuff;
+
+		memcpy(stream, tempResampleBuf, len1);
 		len -= len1;
 		stream += len1;
 		is->audio_buf_index += len1;
 	}
 }
 
-static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque) {
+static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque)
+{
 	SDL_Event event;
 	event.type = FF_REFRESH_EVENT;
 	event.user.data1 = opaque;
@@ -486,23 +579,23 @@ static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque) {
 }
 
 /* schedule a video refresh in 'delay' ms */
-static void schedule_refresh(VideoState *is, int delay) {
+static void schedule_refresh(VideoState *is, int delay)
+{
 	SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
 }
 
 void video_display(VideoState *is)
 {
-
 	VideoPicture *vp = &is->pictq[is->pictq_rindex];
 	if (vp->bmp)
 	{
+		//while (!screen_mutex->try_lock());
 		screen_mutex->lock();
 		//std::cout << "screen_mutex locked video_display" << std::endl;
 
 		SDL_Rect distRect = {0,0,0,0};
 		SDL_GetWindowSize(screen, &distRect.w, &distRect.h);
 		distRect = scaleKeepAspectRatio(vp->width, vp->height, distRect.w, distRect.h);
-		
 		
 		SDL_RenderClear(renderer);
 		SDL_RenderCopy(renderer, vp->bmp, NULL, &distRect);
@@ -513,7 +606,6 @@ void video_display(VideoState *is)
 
 void video_refresh_timer(void *userdata)
 {
-
 	VideoState *is = (VideoState *)userdata;
 	VideoPicture *vp;
 	double actual_delay, delay, sync_threshold, ref_clock, diff;
@@ -536,8 +628,6 @@ void video_refresh_timer(void *userdata)
 			/* save for next time */
 			is->frame_last_delay = delay;
 			is->frame_last_pts = vp->pts;
-
-
 
 			/* update delay to sync to audio if not master source */
 			if (is->av_sync_type != AV_SYNC_VIDEO_MASTER) {
@@ -579,11 +669,10 @@ void video_refresh_timer(void *userdata)
 			is->pictq_mutex->unlock();
 		}
 	}
-	else
-		schedule_refresh(is, 100);
 }
 
-void alloc_picture(void *userdata) {
+void alloc_picture(void *userdata)
+{
 
 	VideoState *is = (VideoState *)userdata;
 	VideoPicture *vp;
@@ -612,9 +701,8 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 	/* wait until we have space for a new pic */
 	is->pictq_mutex->lock();
 	while (is->pictq_size >= VIDEO_PICTURE_QUEUE_SIZE &&
-		!is->quit) {
-		is->pictq_cond->wait(is->pictq_mutex);
-	}
+		!is->quit)
+		is->pictq_cond->wait(std::unique_lock<std::mutex>(*is->pictq_mutex, std::defer_lock));
 	is->pictq_mutex->unlock();
 
 	if (is->quit)
@@ -659,14 +747,17 @@ double synchronize_video(VideoState *is, AVFrame *src_frame, double pts) {
 
 	double frame_delay;
 
-	if (pts != 0) {
+	if (pts != 0)
+	{
 		/* if we have pts, set video clock to it */
 		is->video_clock = pts;
 	}
-	else {
+	else
+	{
 		/* if we aren't given a pts, set it to the clock */
 		pts = is->video_clock;
 	}
+
 	/* update the video clock */
 	frame_delay = av_q2d(is->video_ctx->time_base);
 	/* if we are repeating a frame, adjust clock accordingly */
@@ -675,7 +766,8 @@ double synchronize_video(VideoState *is, AVFrame *src_frame, double pts) {
 	return pts;
 }
 
-int video_thread(void *arg) {
+int video_thread(void *arg)
+{
 	VideoState *is = (VideoState *)arg;
 	AVPacket pkt1, *packet = &pkt1;
 	int frameFinished;
@@ -718,8 +810,8 @@ int video_thread(void *arg) {
 	return 0;
 }
 
-int stream_component_open(VideoState *is, int stream_index) {
-
+int stream_component_open(VideoState *is, int stream_index)
+{
 	AVFormatContext *pFormatCtx = is->pFormatCtx;
 	AVCodecContext *codecCtx = NULL;
 	AVCodec *codec = NULL;
@@ -742,17 +834,20 @@ int stream_component_open(VideoState *is, int stream_index) {
 	}
 
 
-	if (codecCtx->codec_type == AVMEDIA_TYPE_AUDIO) {
+	if (codecCtx->codec_type == AVMEDIA_TYPE_AUDIO)
+	{
 		// Set audio settings from codec info
 		wanted_spec.freq = codecCtx->sample_rate;
 		wanted_spec.format = AUDIO_S16SYS;
 		wanted_spec.channels = codecCtx->channels;
 		wanted_spec.silence = 0;
 		wanted_spec.samples = SDL_AUDIO_BUFFER_SIZE;
+
 		wanted_spec.callback = audio_callback;
 		wanted_spec.userdata = is;
 
-		if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
+		if (SDL_OpenAudio(&wanted_spec, &spec) < 0)
+		{
 			fprintf(stderr, "SDL_OpenAudio: %s\n", SDL_GetError());
 			return -1;
 		}
@@ -971,9 +1066,10 @@ int eventLoop()
 			case SDLK_SPACE:
 				static bool flag;
 				if (flag)
-					screen_mutex->lock();
-				else
 					screen_mutex->unlock();
+				else
+					screen_mutex->lock();
+					//while (!screen_mutex->try_lock());
 				std::cout << "SPACE " << flag << std::endl;
 				flag = !flag;
 				break;
