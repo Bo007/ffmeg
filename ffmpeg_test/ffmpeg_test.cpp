@@ -31,13 +31,20 @@
 
 int main(int argc, char *argv[])
 {
+	//freopen("output.txt", "w", stdout);
+	//freopen("error.txt", "w", stderr);
+
 	std::vector<char *>fileNames;
 	fileNames.push_back("F:\\Pohozhdeniya_imperatora.mp4");
 	fileNames.push_back("F:\\738994211.mp4");
 	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video).mp4");
 	fileNames.push_back("F:\\Ofenbach2.mp4");
+	fileNames.push_back("F:\\Black Foxxes - Manic In Me.mp4");
+	fileNames.push_back("F:\\HeadingUpHigh.mp4");
+	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video) (online-video-cutter.com).mp4");
+	
 
-	int index = 3;
+	int index = 0;
 
 	return eventLoop(fileNames[index]);
 }
