@@ -11,7 +11,6 @@ extern "C"
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-
 #include <iostream>
 
 SDL_Window		*screen;
@@ -35,7 +34,6 @@ struct VideoPicture
 	SDL_Texture *bmp;
 	int width, height; /* source height & width */
 	int allocated;
-	double pts;
 };
 
 struct VideoState
@@ -65,10 +63,7 @@ struct VideoState
 	double          audio_diff_cum; /* used for AV difference average computation */
 	int             audio_diff_avg_count;
 	double          frame_timer;
-	double          frame_last_pts;
-	double          frame_last_delay;
 	double          video_clock; ///<pts of last decoded frame / predicted pts of next decoded frame
-	double          video_current_pts; ///<current displayed pts (different from video_clock if frame fifos are used)
 	int64_t         video_current_pts_time;  ///<time (av_gettime) at which we updated video_current_pts - used to have running video pts
 	AVStream        *video_st;
 	AVCodecContext  *video_ctx;
@@ -83,7 +78,6 @@ struct VideoState
 	std::thread      *parse_tid;
 	std::thread      *video_tid;
 
-	char            filename[1024];
 	int             quit;
 };
 
@@ -210,10 +204,8 @@ double get_audio_clock(VideoState *is)
 }
 double get_video_clock(VideoState *is)
 {
-	double delta = (av_gettime() - is->video_current_pts_time) / 1000000.0;
-
-	// бессмысленные дейсвия, т.к. is->video_current_pts на постой равен 0
-	return is->video_current_pts + delta;
+	double delta = (av_gettime() - is->video_current_pts_time) / (double)AV_TIME_BASE;
+	return delta;
 }
 double get_master_clock(VideoState *is)
 {
@@ -224,7 +216,7 @@ double get_master_clock(VideoState *is)
 	else if (is->av_sync_type == AV_SYNC_AUDIO_MASTER)
 		return get_audio_clock(is);
 	else
-		return av_gettime() / 1000000.0;
+		return av_gettime() / (double)AV_TIME_BASE;
 }
 
 
@@ -427,24 +419,13 @@ void video_refresh_timer(void *userdata)
 		{
 			vp = &is->pictq[is->pictq_rindex];
 
-			is->video_current_pts = vp->pts;
 			is->video_current_pts_time = av_gettime();
-			// нигде не присваевается никакое значение vp->pts
-			delay = vp->pts - is->frame_last_pts; /* the pts from last time */
-			if (delay <= 0 || delay >= 1.0)
-			{
-				/* if incorrect delay, use previous one */
-				delay = is->frame_last_delay;
-			}
-			/* save for next time */
-			is->frame_last_delay = delay;
-			is->frame_last_pts = vp->pts;
-
+			delay = 0.04; /* the pts from last time */
 			/* update delay to sync to audio if not master source */
 			if (is->av_sync_type != AV_SYNC_VIDEO_MASTER)
 			{
 				ref_clock = get_master_clock(is);
-				diff = vp->pts - ref_clock;
+				diff = ref_clock;
 
 				/* Skip or repeat the frame. Take delay into account
 				FFPlay still doesn't "know if this is the best guess." */
@@ -462,7 +443,7 @@ void video_refresh_timer(void *userdata)
 
 			is->frame_timer += delay;
 			/* computer the REAL delay */
-			actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
+			actual_delay = is->frame_timer - (av_gettime() / (double)AV_TIME_BASE);
 			if (actual_delay < 0.010)
 			{
 				/* Really it should skip the picture instead */
@@ -484,10 +465,7 @@ void video_refresh_timer(void *userdata)
 		}
 	}
 	else
-	{
 		schedule_refresh(is, 100);
-		//std::cout << "VIDEO  " << is->video_clock << std::endl;
-	}
 }
 
 void alloc_picture(void *userdata)
@@ -578,7 +556,8 @@ double synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 	frame_delay += src_frame->repeat_pict * (frame_delay * 0.5);
 	is->video_clock += frame_delay;
 
-	std::cout << "synchronize_video " << pts * 2 << std::endl;
+	//std::cout << "synchronize_video " << pts * 2 << std::endl;
+	// pts в 2 раза меньше реального времени
 	return pts;
 }
 
@@ -633,9 +612,8 @@ int stream_component_open(VideoState *is, int stream_index)
 	AVCodec *codec = NULL;
 	SDL_AudioSpec wanted_spec;
 
-	if (stream_index < 0 || stream_index >= pFormatCtx->nb_streams) {
+	if (stream_index < 0 || stream_index >= pFormatCtx->nb_streams)
 		return -1;
-	}
 
 	codec = avcodec_find_decoder(pFormatCtx->streams[stream_index]->codec->codec_id);
 	if (!codec)
@@ -703,8 +681,7 @@ int stream_component_open(VideoState *is, int stream_index)
 		is->video_st = pFormatCtx->streams[stream_index];
 		is->video_ctx = codecCtx;
 
-		is->frame_timer = (double)av_gettime() / 1000000.0;
-		is->frame_last_delay = 40e-3;
+		is->frame_timer = (double)av_gettime() / (double)AV_TIME_BASE;
 		is->video_current_pts_time = av_gettime();
 
 		packet_queue_init(&is->videoq);
@@ -720,52 +697,6 @@ int stream_component_open(VideoState *is, int stream_index)
 int decode_thread(void *arg)
 {
 	VideoState *is = static_cast<VideoState *>(arg);
-
-	is->videoStream = -1;
-	is->audioStream = -1;
-
-	global_video_state = is;
-
-	// Open video file
-	AVFormatContext *pFormatCtx = NULL;
-	if (avformat_open_input(&pFormatCtx, is->filename, NULL, NULL) != 0)
-	{
-		std::cout << "cannot open " << is->filename << std::endl;
-		return -1; // Couldn't open file
-	}
-
-	is->pFormatCtx = pFormatCtx;
-
-	// Retrieve stream information
-	if (avformat_find_stream_info(pFormatCtx, NULL)<0)
-		return -1; // Couldn't find stream information
-
-				   // Dump information about file onto standard error
-	av_dump_format(pFormatCtx, 0, is->filename, 0);
-
-	// Find the first video stream
-	int video_index = -1;
-	int audio_index = -1;
-	for (int i = 0; i<pFormatCtx->nb_streams; i++)
-	{
-		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO &&
-			video_index < 0)
-			video_index = i;
-		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO &&
-			audio_index < 0)
-			audio_index = i;
-	}
-	if (audio_index >= 0)
-		stream_component_open(is, audio_index);
-	if (video_index >= 0)
-		stream_component_open(is, video_index);
-
-	if (is->videoStream < 0 || is->audioStream < 0)
-	{
-		std::cout << is->filename << ": could not open codecs" << std::endl;
-		goto fail;
-	}
-
 	// main decode loop
 	for (;;)
 	{
@@ -785,9 +716,9 @@ int decode_thread(void *arg)
 
 			if (stream_index >= 0)
 				seek_target = av_rescale_q(seek_target, { 1, AV_TIME_BASE },
-					pFormatCtx->streams[stream_index]->time_base);
-			std::cout << pFormatCtx->streams[stream_index]->time_base.num << " / " <<
-				pFormatCtx->streams[stream_index]->time_base.den << std::endl;
+					is->pFormatCtx->streams[stream_index]->time_base);
+			std::cout << is->pFormatCtx->streams[stream_index]->time_base.num << " / " <<
+				is->pFormatCtx->streams[stream_index]->time_base.den << std::endl;
 			std::cout << "seek_target" << 1.0 * seek_target / AV_TIME_BASE << std::endl;
 			if (av_seek_frame(is->pFormatCtx, stream_index,
 				seek_target, is->seek_flags) < 0)
@@ -835,7 +766,6 @@ int decode_thread(void *arg)
 	while (!is->quit)
 		SDL_Delay(100);
 
-fail:
 	SDL_Event event;
 	event.type = FF_QUIT_EVENT;
 	event.user.data1 = is;
@@ -854,7 +784,7 @@ void stream_seek(VideoState *is, int64_t pos, int rel)
 	}
 }
 
-int eventLoop(char* fileName)
+bool globalInit(char* fileName)
 {
 	VideoState* is = static_cast<VideoState*>(av_mallocz(sizeof(VideoState)));
 	av_register_all();
@@ -862,7 +792,7 @@ int eventLoop(char* fileName)
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER))
 	{
 		std::cout << "Could not initialize SDL - " << SDL_GetError() << std::endl;
-		exit(1);
+		return false;
 	}
 
 	// Make a screen to put our video
@@ -875,12 +805,10 @@ int eventLoop(char* fileName)
 	if (!screen)
 	{
 		std::cout << "Could not set video mode - exiting" << SDL_GetError() << std::endl;
-		exit(1);
+		return false;
 	}
 
 	screen_mutex = new std::mutex();
-
-	strcpy_s(is->filename, fileName);
 
 	is->pictq_mutex = new std::mutex();
 	is->pictq_cond = new std::condition_variable();
@@ -888,21 +816,70 @@ int eventLoop(char* fileName)
 	schedule_refresh(is, 40);
 
 	is->av_sync_type = DEFAULT_AV_SYNC_TYPE;
+	is->videoStream = -1;
+	is->audioStream = -1;
+
+	global_video_state = is;
+
+	// Open video file
+	AVFormatContext *pFormatCtx = NULL;
+	if (avformat_open_input(&pFormatCtx, fileName, NULL, NULL) != 0)
+	{
+		std::cout << "cannot open " << fileName << std::endl;
+		return false;
+	}
+
+	is->pFormatCtx = pFormatCtx;
+
+	// Retrieve stream information
+	if (avformat_find_stream_info(pFormatCtx, NULL)<0)
+		return false; // Couldn't find stream information
+
+				   // Dump information about file onto standard error
+	av_dump_format(pFormatCtx, 0, fileName, 0);
+
+	// Find the first video stream
+	int video_index = -1;
+	int audio_index = -1;
+	for (int i = 0; i<pFormatCtx->nb_streams; i++)
+	{
+		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO &&
+			video_index < 0)
+			video_index = i;
+		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO &&
+			audio_index < 0)
+			audio_index = i;
+	}
+	if (audio_index >= 0)
+		stream_component_open(is, audio_index);
+	if (video_index >= 0)
+		stream_component_open(is, video_index);
+
+	if (is->videoStream < 0 || is->audioStream < 0)
+	{
+		std::cout << fileName << ": could not open codecs" << std::endl;
+		return false;
+	}
 	is->parse_tid = new std::thread(decode_thread, is);
 	if (!is->parse_tid)
 	{
 		av_free(is);
-		return -1;
+		return false;
 	}
 
 	av_init_packet(&flush_pkt);
 	flush_pkt.data = reinterpret_cast<uint8_t*>("FLUSH");
 
+	return true;
+}
+
+int eventLoop(char* fileName)
+{
+	int ret = globalInit(fileName);
 	auto startTime = av_gettime();
-	int ret = 1;
 	while (ret == 1)
 	{
-		//std::cout << "CURRENT TIME" << (av_gettime() - startTime) / 1000000.0 << std::endl;
+		//std::cout << "CURRENT TIME" << (av_gettime() - startTime) / (double)AV_TIME_BASE << std::endl;
 		SDL_Event event;
 		double incr, pos;
 		SDL_WaitEvent(&event);
@@ -953,7 +930,7 @@ int eventLoop(char* fileName)
 					//global_video_state->audioq.mutex->lock();
 					//global_video_state->videoq.mutex->lock();
 				}
-				std::cout << "STOP TIME " << (av_gettime() - startTime) / 1000000.0 << std::endl;
+				std::cout << "STOP TIME " << (av_gettime() - startTime) / (double)AV_TIME_BASE << std::endl;
 
 				break;
 			default:

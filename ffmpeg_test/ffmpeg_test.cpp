@@ -31,9 +31,11 @@
 
 int main(int argc, char *argv[])
 {
+	// if we want have log files
 	//freopen("output.txt", "w", stdout);
 	//freopen("error.txt", "w", stderr);
 
+	// your mp4 file list
 	std::vector<char *>fileNames;
 	// 0
 	fileNames.push_back("F:\\Pohozhdeniya_imperatora.mp4");
@@ -51,8 +53,11 @@ int main(int argc, char *argv[])
 	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video) (online-video-cutter.com).mp4");
 	// 7
 	fileNames.push_back("F:\\HeadingUpHigh (online-video-cutter.com).mp4");
+	// 8
+	fileNames.push_back("F:\\Black Foxxes - Manic In Me (online-video-cutter.com).mp4");
+	
 
-	int index = 7;
+	int index = 8;
 	
 	return eventLoop(fileNames[index]);
 }

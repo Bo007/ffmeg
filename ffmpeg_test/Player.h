@@ -19,8 +19,8 @@ const int MAX_AUDIO_FRAME_SIZE = 192000;
 const int MAX_AUDIOQ_SIZE = (5 * 16 * 1024);
 const int MAX_VIDEOQ_SIZE = (5 * 256 * 1024);
 
-const double AV_SYNC_THRESHOLD = 0.01;
-const double AV_NOSYNC_THRESHOLD = .01;
+const double AV_SYNC_THRESHOLD = 10.0;
+const double AV_NOSYNC_THRESHOLD = 0.01;
 
 const int SAMPLE_CORRECTION_PERCENT_MAX = 10;
 const int AUDIO_DIFF_AVG_NB = 20;
@@ -36,8 +36,8 @@ typedef struct VideoPicture VideoPicture;
 
 typedef struct VideoState VideoState;
 
-
-enum {
+enum
+{
 	AV_SYNC_AUDIO_MASTER,
 	AV_SYNC_VIDEO_MASTER,
 	AV_SYNC_EXTERNAL_MASTER,
@@ -66,12 +66,6 @@ int synchronize_audio(VideoState *is, short *samples,
 int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double *pts_ptr);
 void audio_callback(void *userdata, Uint8 *stream, int len);
 
-SwrContext* initSwrContext(AVCodecContext* audio_context);
-static int init_converted_samples(uint8_t **converted_input_samples,
-	AVCodecContext *output_codec_context,
-	int frame_size);
-int convert_sample_buffer(AVCodecContext* audio_context, const int& len1, uint8_t** inBuff, uint8_t** outBuff);
-
 static Uint32 sdl_refresh_timer_cb(Uint32 interval, void *opaque)
 {
 	SDL_Event event;
@@ -97,3 +91,5 @@ int decode_thread(void *arg);
 int stream_component_open(VideoState *is, int stream_index);
 int video_thread(void *arg);
 double synchronize_video(VideoState *is, AVFrame *src_frame, double pts);
+
+bool globalInit(char* fileName);
