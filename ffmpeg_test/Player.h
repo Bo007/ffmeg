@@ -19,8 +19,8 @@ const int MAX_AUDIO_FRAME_SIZE = 192000;
 const int MAX_AUDIOQ_SIZE = (5 * 16 * 1024);
 const int MAX_VIDEOQ_SIZE = (5 * 256 * 1024);
 
-const int AV_SYNC_THRESHOLD = 0.01;
-const int AV_NOSYNC_THRESHOLD = 10.0;
+const double AV_SYNC_THRESHOLD = 0.01;
+const double AV_NOSYNC_THRESHOLD = .01;
 
 const int SAMPLE_CORRECTION_PERCENT_MAX = 10;
 const int AUDIO_DIFF_AVG_NB = 20;
@@ -88,7 +88,7 @@ static void schedule_refresh(VideoState *is, int delay)
 void video_display(VideoState *is);
 void video_refresh_timer(void *userdata);
 void alloc_picture(void *userdata);
-int queue_picture(VideoState *is, AVFrame *pFrame, double pts);
+int queue_picture(VideoState *is, AVFrame *pFrame);
 
 int eventLoop( char* fileName );
 

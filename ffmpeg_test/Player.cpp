@@ -63,8 +63,6 @@ struct VideoState
 	int             audio_pkt_size;
 	int             audio_hw_buf_size;
 	double          audio_diff_cum; /* used for AV difference average computation */
-	double          audio_diff_avg_coef;
-	double          audio_diff_threshold;
 	int             audio_diff_avg_count;
 	double          frame_timer;
 	double          frame_last_pts;
@@ -75,7 +73,7 @@ struct VideoState
 	AVStream        *video_st;
 	AVCodecContext  *video_ctx;
 	PacketQueue     videoq;
-	struct SwsContext *sws_ctx;
+	struct SwrContext *swr_audio_ctx;
 
 	VideoPicture    pictq[VIDEO_PICTURE_QUEUE_SIZE];
 	int             pictq_size, pictq_rindex, pictq_windex;
@@ -198,8 +196,12 @@ static void packet_queue_flush(PacketQueue *q)
 	q->mutex->unlock();
 }
 
+// what the fun? 
+// get_audio_clock возвращает реальное время проигрывания,
+// get_video_clock возвращает птс
 double get_audio_clock(VideoState *is)
 {
+	// бессмысленные дейсвия, т.к. hw_buf_size на постой равен 0
 	int hw_buf_size = is->audio_buf_size - is->audio_buf_index;
 	int n = 2 * spec.channels;
 	int bytes_per_sec = spec.freq * n;// is->audio_ctx->sample_rate * n;
@@ -209,10 +211,14 @@ double get_audio_clock(VideoState *is)
 double get_video_clock(VideoState *is)
 {
 	double delta = (av_gettime() - is->video_current_pts_time) / 1000000.0;
+
+	// бессмысленные дейсвия, т.к. is->video_current_pts на постой равен 0
 	return is->video_current_pts + delta;
 }
 double get_master_clock(VideoState *is)
 {
+	// если установить в AV_SYNC_VIDEO_MASTER получим странное поведение
+
 	if (is->av_sync_type == AV_SYNC_VIDEO_MASTER)
 		return get_video_clock(is);
 	else if (is->av_sync_type == AV_SYNC_AUDIO_MASTER)
@@ -229,60 +235,52 @@ int synchronize_audio(VideoState *is, short *samples,
 {
 	if (is->av_sync_type != AV_SYNC_AUDIO_MASTER)
 	{
-
-		double diff, avg_diff;
-		int wanted_size, min_size, max_size /*, nb_samples */;
-
 		double ref_clock = get_master_clock(is);
-		diff = get_audio_clock(is) - ref_clock;
+		double diff = get_audio_clock(is) - ref_clock;
 		//std::cout << diff << " - " <<
 		//get_master_clock(is) << std::endl;
 
 		if (diff < AV_NOSYNC_THRESHOLD)
 		{
 			// accumulate the diffs
-			is->audio_diff_cum = diff + is->audio_diff_avg_coef
-				* is->audio_diff_cum;
+			is->audio_diff_cum = diff;
 			if (is->audio_diff_avg_count < AUDIO_DIFF_AVG_NB)
 				is->audio_diff_avg_count++;
 			else
 			{
-				avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
-				if (fabs(avg_diff) >= is->audio_diff_threshold)
+				int n = 2 * spec.channels;
+				/*, nb_samples */;
+				int wanted_size = samples_size + ((int)(diff * spec.freq) * n);
+				int min_size = samples_size * ((100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100);
+				int max_size = samples_size * ((100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100);
+				
+				if (wanted_size < min_size)
+					wanted_size = min_size;
+				else
+					if (wanted_size > max_size)
+						wanted_size = max_size;
+				
+				if (wanted_size < samples_size)
 				{
-					int n = 2 * spec.channels;
-					wanted_size = samples_size + ((int)(diff * spec.freq) * n);
-					min_size = samples_size * ((100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100);
-					max_size = samples_size * ((100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100);
+					/* remove samples */
+					samples_size = wanted_size;
+				}
+				else if (wanted_size > samples_size)
+				{
+					uint8_t *samples_end, *q;
+					int nb;
 
-					if (wanted_size < min_size)
-						wanted_size = min_size;
-					else
-						if (wanted_size > max_size)
-							wanted_size = max_size;
-
-					if (wanted_size < samples_size)
+					/* add samples by copying final sample*/
+					nb = (samples_size - wanted_size);
+					samples_end = (uint8_t *)samples + samples_size - n;
+					q = samples_end + n;
+					while (nb > 0)
 					{
-						/* remove samples */
-						samples_size = wanted_size;
+						memcpy(q, samples_end, n);
+						q += n;
+						nb -= n;
 					}
-					else if (wanted_size > samples_size)
-					{
-						uint8_t *samples_end, *q;
-						int nb;
-
-						/* add samples by copying final sample*/
-						nb = (samples_size - wanted_size);
-						samples_end = (uint8_t *)samples + samples_size - n;
-						q = samples_end + n;
-						while (nb > 0)
-						{
-							memcpy(q, samples_end, n);
-							q += n;
-							nb -= n;
-						}
-						samples_size = wanted_size;
-					}
+					samples_size = wanted_size;
 				}
 			}
 		}
@@ -314,13 +312,7 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 			int data_size = 0;
 			if (got_frame)
 			{
-				static SwrContext *swr = swr_alloc_set_opts(swr, 
-					av_get_default_channel_layout(spec.channels), AV_SAMPLE_FMT_FLT, spec.freq, // in
-					is->audio_ctx->channel_layout, is->audio_ctx->sample_fmt, is->audio_ctx->sample_rate, // out
-					0, NULL); //xz
-				static int res = swr_init(swr);
-
-				res = swr_convert(swr,
+				swr_convert(is->swr_audio_ctx,
 					&audio_buf, spec.samples,
 					(const uint8_t **)&is->audio_frame.data[0], is->audio_frame.nb_samples);
 
@@ -331,13 +323,13 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 			if (data_size <= 0)/* No data yet, get more frames */
 				continue;
 
-			double pts = is->audio_clock;
-			*pts_ptr = pts;
 			int n = 2 * spec.channels;
 			is->audio_clock += (double)spec.samples /
 				(double)(spec.freq);
 			is->audio_clock /= spec.freq;
 			is->audio_clock *= is->audio_ctx->sample_rate;
+			double pts = is->audio_clock;
+			*pts_ptr = pts;
 			/* We have data, return it and come back for more later */
 			return data_size;
 		}
@@ -353,6 +345,7 @@ int audio_decode_frame(VideoState *is, uint8_t *audio_buf, int buf_size, double 
 
 		if (pkt->data == flush_pkt.data)
 		{
+			// во время проигрывания видео флаш не происходит
 			avcodec_flush_buffers(is->audio_ctx);
 			continue;
 		}
@@ -436,8 +429,10 @@ void video_refresh_timer(void *userdata)
 
 			is->video_current_pts = vp->pts;
 			is->video_current_pts_time = av_gettime();
+			// нигде не присваевается никакое значение vp->pts
 			delay = vp->pts - is->frame_last_pts; /* the pts from last time */
-			if (delay <= 0 || delay >= 1.0) {
+			if (delay <= 0 || delay >= 1.0)
+			{
 				/* if incorrect delay, use previous one */
 				delay = is->frame_last_delay;
 			}
@@ -464,10 +459,12 @@ void video_refresh_timer(void *userdata)
 					}
 				}
 			}
+
 			is->frame_timer += delay;
 			/* computer the REAL delay */
 			actual_delay = is->frame_timer - (av_gettime() / 1000000.0);
-			if (actual_delay < 0.010) {
+			if (actual_delay < 0.010)
+			{
 				/* Really it should skip the picture instead */
 				actual_delay = 0.010;
 			}
@@ -477,9 +474,9 @@ void video_refresh_timer(void *userdata)
 			video_display(is);
 
 			/* update queue for next picture! */
-			if (++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE) {
+			if (++is->pictq_rindex == VIDEO_PICTURE_QUEUE_SIZE)
 				is->pictq_rindex = 0;
-			}
+			
 			is->pictq_mutex->lock();
 			is->pictq_size--;
 			is->pictq_cond->notify_one();
@@ -514,12 +511,12 @@ void alloc_picture(void *userdata)
 	vp->allocated = 1;
 }
 
-int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
+int queue_picture(VideoState *is, AVFrame *pFrame)
 {
 	/* wait until we have space for a new pic */
 	is->pictq_mutex->lock();
-	while (is->pictq_size >= VIDEO_PICTURE_QUEUE_SIZE &&
-		!is->quit)
+	while( is->pictq_size >= VIDEO_PICTURE_QUEUE_SIZE &&
+		   !is->quit )
 		is->pictq_cond->wait(std::unique_lock<std::mutex>(*is->pictq_mutex, std::defer_lock));
 	is->pictq_mutex->unlock();
 
@@ -532,7 +529,8 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 	/* allocate or resize the buffer! */
 	if (!vp->bmp ||
 		vp->width != is->video_ctx->width ||
-		vp->height != is->video_ctx->height) {
+		vp->height != is->video_ctx->height)
+	{
 		SDL_Event event;
 
 		vp->allocated = 0;
@@ -546,9 +544,7 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 	is->pictq_mutex->lock();
 	if (vp->bmp)
 	{
-		SDL_Rect rect = { 0, 0, pFrame->width, pFrame->height };
-		int lsize = sizeof(pFrame->linesize);
-		SDL_UpdateYUVTexture(vp->bmp, &rect, pFrame->data[0], pFrame->linesize[0],
+		SDL_UpdateYUVTexture(vp->bmp, NULL, pFrame->data[0], pFrame->linesize[0],
 			pFrame->data[1], pFrame->linesize[1],
 			pFrame->data[2], pFrame->linesize[2]);
 		/* now we inform our display thread that we have a pic ready */
@@ -565,8 +561,6 @@ int queue_picture(VideoState *is, AVFrame *pFrame, double pts)
 
 double synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 {
-	double frame_delay;
-
 	if (pts != 0)
 	{
 		/* if we have pts, set video clock to it */
@@ -579,11 +573,12 @@ double synchronize_video(VideoState *is, AVFrame *src_frame, double pts)
 	}
 
 	/* update the video clock */
-	frame_delay = av_q2d(is->video_ctx->time_base);
+	double frame_delay = av_q2d(is->video_ctx->time_base);
 	/* if we are repeating a frame, adjust clock accordingly */
 	frame_delay += src_frame->repeat_pict * (frame_delay * 0.5);
 	is->video_clock += frame_delay;
 
+	std::cout << "synchronize_video " << pts * 2 << std::endl;
 	return pts;
 }
 
@@ -607,7 +602,8 @@ int video_thread(void *arg)
 		int frameFinished;
 		avcodec_decode_video2(is->video_ctx, pFrame, &frameFinished, packet);
 
-		if ((pts = av_frame_get_best_effort_timestamp(pFrame)) == AV_NOPTS_VALUE) {
+		if ((pts = av_frame_get_best_effort_timestamp(pFrame)) == AV_NOPTS_VALUE)
+		{
 			pts = av_frame_get_best_effort_timestamp(pFrame);
 		}
 		else {
@@ -619,7 +615,7 @@ int video_thread(void *arg)
 		if (frameFinished)
 		{
 			pts = synchronize_video(is, pFrame, pts);
-			if (queue_picture(is, pFrame, pts) < 0)
+			if (queue_picture(is, pFrame) < 0)
 			{
 				break;
 			}
@@ -693,6 +689,14 @@ int stream_component_open(VideoState *is, int stream_index)
 		memset(&is->audio_pkt, 0, sizeof(is->audio_pkt));
 		packet_queue_init(&is->audioq);
 		SDL_PauseAudio(0);
+
+		is->swr_audio_ctx = 
+			swr_alloc_set_opts(NULL,
+			av_get_default_channel_layout(spec.channels), AV_SAMPLE_FMT_FLT, spec.freq, // in
+			is->audio_ctx->channel_layout, is->audio_ctx->sample_fmt, is->audio_ctx->sample_rate, // out
+			0, NULL); //xz
+		swr_init(is->swr_audio_ctx);
+
 		break;
 	case AVMEDIA_TYPE_VIDEO:
 		is->videoStream = stream_index;
@@ -705,11 +709,7 @@ int stream_component_open(VideoState *is, int stream_index)
 
 		packet_queue_init(&is->videoq);
 		is->video_tid = new std::thread(video_thread, is);
-		is->sws_ctx = sws_getContext(is->video_ctx->width, is->video_ctx->height,
-			is->video_ctx->pix_fmt, is->video_ctx->width,
-			is->video_ctx->height, AV_PIX_FMT_YUV420P,
-			SWS_BILINEAR, NULL, NULL, NULL
-		);
+
 		break;
 	default:
 		break;
@@ -941,26 +941,19 @@ int eventLoop(char* fileName)
 				static int64_t flag;
 				if (flag)
 				{
-					is->video_current_pts_time = av_gettime();
-
-					global_video_state->audioq.mutex->unlock();
-					global_video_state->videoq.mutex->unlock();
+					//is->video_current_pts_time = av_gettime();
+					//global_video_state->audioq.mutex->unlock();
+					//global_video_state->videoq.mutex->unlock();
 
 					flag = 0;
 				}
 				else
 				{
 					flag = 1;
-
-					global_video_state->audioq.mutex->lock();
-					global_video_state->videoq.mutex->lock();
-
-					std::cout << "STOP TIME" << (av_gettime() - startTime) / 1000000.0 << std::endl;
+					//global_video_state->audioq.mutex->lock();
+					//global_video_state->videoq.mutex->lock();
 				}
-				//std::cout << "audio_clock - " << get_audio_clock(global_video_state) << std::endl
-				//	<< "video_clock - " << get_video_clock(global_video_state) << std::endl
-				//	<< "video_current_pts - " << is->video_current_pts << std::endl
-				//	<< "video_current_pts_time - " << ( av_gettime() - is->video_current_pts_time ) / 1000000.0 << std::endl;
+				std::cout << "STOP TIME " << (av_gettime() - startTime) / 1000000.0 << std::endl;
 
 				break;
 			default:

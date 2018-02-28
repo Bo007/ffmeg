@@ -35,16 +35,24 @@ int main(int argc, char *argv[])
 	//freopen("error.txt", "w", stderr);
 
 	std::vector<char *>fileNames;
+	// 0
 	fileNames.push_back("F:\\Pohozhdeniya_imperatora.mp4");
+	// 1
 	fileNames.push_back("F:\\738994211.mp4");
+	// 2
 	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video).mp4");
+	// 3
 	fileNames.push_back("F:\\Ofenbach2.mp4");
+	// 4
 	fileNames.push_back("F:\\Black Foxxes - Manic In Me.mp4");
+	// 5
 	fileNames.push_back("F:\\HeadingUpHigh.mp4");
+	// 6
 	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video) (online-video-cutter.com).mp4");
+	// 7
+	fileNames.push_back("F:\\HeadingUpHigh (online-video-cutter.com).mp4");
+
+	int index = 7;
 	
-
-	int index = 0;
-
 	return eventLoop(fileNames[index]);
 }
