@@ -28,6 +28,28 @@
 #include "Player.h"
 
 #include <vector>
+#include <string>
+
+const std::string FILE_PATH = "F:\\test_videos\\";
+const std::string FILE_NAMES[] = 
+{
+	// long
+	/*0*/"Pohozhdeniya_imperatora.mp4",
+
+	// middle
+	/*1*/"Ofenbach-Be_Mine(Official Video).mp4",
+	/*2*/"Ofenbach2.mp4",
+	/*3*/"Black Foxxes - Manic In Me.mp4",
+	/*4*/"HeadingUpHigh.mp4",
+	/*5*/"videoplayback.mp4"
+
+	// short
+	/*6*/"738994211.mp4",
+	/*7*/"Ofenbach-Be_Mine(Official Video) (online-video-cutter.com).mp4",
+	/*8*/"HeadingUpHigh (online-video-cutter.com).mp4",
+	/*9*/"Black Foxxes - Manic In Me (online-video-cutter.com).mp4",
+};
+
 
 int main(int argc, char *argv[])
 {
@@ -35,29 +57,6 @@ int main(int argc, char *argv[])
 	//freopen("output.txt", "w", stdout);
 	//freopen("error.txt", "w", stderr);
 
-	// your mp4 file list
-	std::vector<char *>fileNames;
-	// 0
-	fileNames.push_back("F:\\Pohozhdeniya_imperatora.mp4");
-	// 1
-	fileNames.push_back("F:\\738994211.mp4");
-	// 2
-	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video).mp4");
-	// 3
-	fileNames.push_back("F:\\Ofenbach2.mp4");
-	// 4
-	fileNames.push_back("F:\\Black Foxxes - Manic In Me.mp4");
-	// 5
-	fileNames.push_back("F:\\HeadingUpHigh.mp4");
-	// 6
-	fileNames.push_back("F:\\Ofenbach-Be_Mine(Official Video) (online-video-cutter.com).mp4");
-	// 7
-	fileNames.push_back("F:\\HeadingUpHigh (online-video-cutter.com).mp4");
-	// 8
-	fileNames.push_back("F:\\Black Foxxes - Manic In Me (online-video-cutter.com).mp4");
-	
-
-	int index = 8;
-	
-	return eventLoop(fileNames[index]);
+	int index = 4;
+	return eventLoop( ( FILE_PATH + FILE_NAMES[index] ).c_str() );
 }

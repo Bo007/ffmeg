@@ -30,11 +30,11 @@ const int FF_QUIT_EVENT = (SDL_USEREVENT + 1);
 
 const int VIDEO_PICTURE_QUEUE_SIZE = 1;
 
-typedef struct PacketQueue PacketQueue;
+class PacketQueue;
 
-typedef struct VideoPicture VideoPicture;
+class VideoPicture;
 
-typedef struct VideoState VideoState;
+class VideoState;
 
 enum
 {
@@ -51,11 +51,6 @@ can be global in case we need it. */
 
 SDL_Rect scaleKeepAspectRatio(const int& sourceWidth, const int& sourceHeight,
 	const int& distWidth, const int& distHeight);
-
-void packet_queue_init(PacketQueue *q);
-int packet_queue_put(PacketQueue *q, AVPacket *pkt);
-static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block);
-static void packet_queue_flush(PacketQueue *q);
 
 double get_audio_clock(VideoState *is);
 double get_video_clock(VideoState *is);
@@ -79,12 +74,9 @@ static void schedule_refresh(VideoState *is, int delay)
 	SDL_AddTimer(delay, sdl_refresh_timer_cb, is);
 }
 
-void video_display(VideoState *is);
-void video_refresh_timer(void *userdata);
-void alloc_picture(void *userdata);
-int queue_picture(VideoState *is, AVFrame *pFrame);
-
-int eventLoop( char* fileName );
+void video_display( VideoPicture *vp );
+void video_refresh_timer( void *userdata );
+int queue_picture( VideoState *is, AVFrame *pFrame );
 
 void stream_seek(VideoState *is, int64_t pos, int rel);
 int decode_thread(void *arg);
@@ -92,4 +84,5 @@ int stream_component_open(VideoState *is, int stream_index);
 int video_thread(void *arg);
 double synchronize_video(VideoState *is, AVFrame *src_frame, double pts);
 
-bool globalInit(char* fileName);
+int eventLoop(const char* fileName);
+bool globalInit( const char* fileName );
